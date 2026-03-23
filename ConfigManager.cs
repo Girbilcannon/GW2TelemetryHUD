@@ -2,6 +2,19 @@
 using System;
 using System.IO;
 
+/*
+    ConfigManager.cs
+
+    Config file loader and saver for GW2Telemetry.
+
+    Responsibilities:
+    - Resolves the application config folder inside AppData
+    - Loads config.json into a TelemetryConfig object
+    - Returns default config values if the file is missing or invalid
+    - Creates the config directory when saving
+    - Writes the current TelemetryConfig back to disk as formatted JSON
+*/
+
 namespace GW2Telemetry
 {
     public static class ConfigManager

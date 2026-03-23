@@ -3,9 +3,24 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 
+/*
+    TelemetryWorker.cs
+
+    Runtime publishing loop for outgoing telemetry.
+
+    Responsibilities:
+    - Connects to the MQTT broker through MqttPublisher
+    - Reads current state from MumbleBridgeService / TelemetryRuntime
+    - Publishes player position telemetry when data is usable
+    - Avoids duplicate publishes when position/name/map have not changed
+    - Tracks last published state for movement detection
+    - Exposes user-facing status text back to MainForm
+    - Enforces the runtime publish interval floor
+*/
+
 namespace GW2Telemetry
 {
-    internal class TelemetryWorker
+    internal sealed class TelemetryWorker
     {
         private readonly TelemetryConfig _config;
         private readonly MqttPublisher _publisher;
@@ -13,7 +28,6 @@ namespace GW2Telemetry
 
         private CancellationTokenSource? _cts;
         private Task? _loopTask;
-
         private string? _lastStatus;
 
         private bool _hasLastPublishedPosition;
@@ -22,8 +36,16 @@ namespace GW2Telemetry
         private float _lastPublishedZ;
         private int _lastPublishedMapId;
         private string _lastPublishedName = string.Empty;
+        private bool _forceRefresh;
 
         public bool IsRunning => _loopTask != null && !_loopTask.IsCompleted;
+        public bool IsMumbleConnected => MumbleBridgeService.GetState().IsConnected;
+        public string EffectiveTopic => _publisher.GetEffectiveTopic();
+
+        public string LastCharacterName { get; private set; } = "-";
+        public int LastMapId { get; private set; }
+        public string LastPositionText { get; private set; } = "-";
+        public string LastMumbleFailureReason { get; private set; } = string.Empty;
 
         public TelemetryWorker(TelemetryConfig config, Action<string>? statusCallback = null)
         {
@@ -37,16 +59,19 @@ namespace GW2Telemetry
             if (IsRunning)
                 return;
 
+            MumbleBridgeService.Start();
+
             _cts = new CancellationTokenSource();
 
             _hasLastPublishedPosition = false;
             _lastPublishedName = string.Empty;
+            _forceRefresh = true;
 
             SetStatus("Connecting to MQTT broker...");
             await _publisher.ConnectAsync();
-            SetStatus("MQTT connected. Waiting for Guild Wars 2 / MumbleLink...");
+            SetStatus($"MQTT connected. Publishing to {EffectiveTopic}. Waiting for Guild Wars 2 / MumbleLink...");
 
-            _loopTask = Task.Run(() => TelemetryLoop(_cts.Token));
+            _loopTask = Task.Run(() => TelemetryLoopAsync(_cts.Token));
         }
 
         public async Task StopAsync()
@@ -65,17 +90,40 @@ namespace GW2Telemetry
             SetStatus("Telemetry stopped.");
         }
 
-        private async Task TelemetryLoop(CancellationToken token)
+        public static bool ProbeMumble()
         {
+            return MumbleBridgeService.GetState().IsConnected;
+        }
+
+        public static Task<bool> ProbeMumbleBurstAsync()
+        {
+            MumbleBridgeService.Start();
+            return MumbleBridgeService.ForceRefreshBurstAsync();
+        }
+
+        private async Task TelemetryLoopAsync(CancellationToken token)
+        {
+            int publishIntervalMs = Math.Max(200, _config.PublishIntervalMs);
+
             while (!token.IsCancellationRequested)
             {
                 try
                 {
-                    if (MumbleService.TryGetSnapshot(out var snapshot) && snapshot != null)
+                    var bridge = MumbleBridgeService.GetState();
+                    var snapshot = bridge.Snapshot;
+
+                    LastMumbleFailureReason = bridge.FailureReason;
+
+                    if (bridge.IsConnected && snapshot != null && snapshot.IsUsableForTelemetry)
                     {
                         string currentName = snapshot.CharacterName ?? string.Empty;
 
+                        LastCharacterName = string.IsNullOrWhiteSpace(currentName) ? "-" : currentName;
+                        LastMapId = snapshot.MapId;
+                        LastPositionText = $"X:{snapshot.PlayerX:0.##}  Y:{snapshot.PlayerY:0.##}  Z:{snapshot.PlayerZ:0.##}";
+
                         bool hasMoved =
+                            _forceRefresh ||
                             !_hasLastPublishedPosition ||
                             snapshot.MapId != _lastPublishedMapId ||
                             !AreClose(snapshot.PlayerX, _lastPublishedX) ||
@@ -87,17 +135,16 @@ namespace GW2Telemetry
                         {
                             var payload = new
                             {
+                                option = "position",
                                 x = snapshot.PlayerX,
                                 y = snapshot.PlayerY,
                                 z = snapshot.PlayerZ,
-                                mapId = snapshot.MapId,
-                                name = currentName,
-                                color = _config.Color,
-                                timestamp = DateTime.UtcNow.ToString("o")
+                                user = currentName,
+                                map = snapshot.MapId,
+                                color = IntToHexColor(_config.Color)
                             };
 
-                            var json = JsonConvert.SerializeObject(payload);
-
+                            string json = JsonConvert.SerializeObject(payload);
                             await _publisher.PublishAsync(json);
 
                             _hasLastPublishedPosition = true;
@@ -106,20 +153,40 @@ namespace GW2Telemetry
                             _lastPublishedZ = snapshot.PlayerZ;
                             _lastPublishedMapId = snapshot.MapId;
                             _lastPublishedName = currentName;
+                            _forceRefresh = false;
 
-                            var displayName = string.IsNullOrWhiteSpace(currentName)
+                            string displayName = string.IsNullOrWhiteSpace(currentName)
                                 ? "(unknown character)"
                                 : currentName;
 
                             SetStatus(
                                 $"Publishing telemetry for {displayName} on map {snapshot.MapId} " +
-                                $"at X:{snapshot.PlayerX:0.##} Y:{snapshot.PlayerY:0.##} Z:{snapshot.PlayerZ:0.##}"
-                            );
+                                $"to {EffectiveTopic} at X:{snapshot.PlayerX:0.##} Y:{snapshot.PlayerY:0.##} Z:{snapshot.PlayerZ:0.##}");
                         }
+                    }
+                    else if (bridge.IsConnected && snapshot != null)
+                    {
+                        LastCharacterName = "-";
+                        LastMapId = 0;
+                        LastPositionText = "-";
+
+                        string suffix = string.IsNullOrWhiteSpace(bridge.FailureReason)
+                            ? string.Empty
+                            : $" ({bridge.FailureReason})";
+
+                        SetStatus($"MumbleLink detected, waiting for usable telemetry...{suffix}");
                     }
                     else
                     {
-                        SetStatus("MQTT connected. Waiting for Guild Wars 2 / MumbleLink...");
+                        LastCharacterName = "-";
+                        LastMapId = 0;
+                        LastPositionText = "-";
+
+                        string suffix = string.IsNullOrWhiteSpace(bridge.FailureReason)
+                            ? string.Empty
+                            : $" ({bridge.FailureReason})";
+
+                        SetStatus($"MQTT connected. Publishing to {EffectiveTopic}. Waiting for Guild Wars 2 / MumbleLink...{suffix}");
                     }
                 }
                 catch (Exception ex)
@@ -129,11 +196,10 @@ namespace GW2Telemetry
 
                 try
                 {
-                    await Task.Delay(_config.PublishIntervalMs, token);
+                    await Task.Delay(publishIntervalMs, token);
                 }
                 catch
                 {
-                    // Shutdown cancellation
                 }
             }
         }
@@ -141,6 +207,15 @@ namespace GW2Telemetry
         private static bool AreClose(float a, float b)
         {
             return MathF.Abs(a - b) < 0.001f;
+        }
+
+        private static string IntToHexColor(int color)
+        {
+            int r = (color >> 16) & 0xFF;
+            int g = (color >> 8) & 0xFF;
+            int b = color & 0xFF;
+
+            return $"#{r:X2}{g:X2}{b:X2}";
         }
 
         private void SetStatus(string message)

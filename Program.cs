@@ -2,6 +2,19 @@ using System;
 using System.Drawing;
 using System.Windows.Forms;
 
+/*
+    Program.cs
+
+    Application entry point and tray bootstrap.
+
+    Responsibilities:
+    - Starts the WinForms application
+    - Loads the tray icon resource
+    - Creates and manages the system tray icon/menu
+    - Opens the main window on startup and on tray interaction
+    - Handles clean shutdown of the app and telemetry components
+*/
+
 namespace GW2Telemetry
 {
     internal static class Program
@@ -11,13 +24,12 @@ namespace GW2Telemetry
         private static Icon? _trayAppIcon;
 
         [STAThread]
-        static void Main()
+        private static void Main()
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            using var stream = typeof(Program).Assembly
-                .GetManifestResourceStream("GW2Telemetry.Assets.tray.png");
+            using var stream = typeof(Program).Assembly.GetManifestResourceStream("GW2Telemetry.Assets.tray.png");
 
             if (stream == null)
             {
@@ -25,8 +37,7 @@ namespace GW2Telemetry
                     "Could not load tray icon resource: GW2Telemetry.Assets.tray.png",
                     "GW2Telemetry",
                     MessageBoxButtons.OK,
-                    MessageBoxIcon.Error
-                );
+                    MessageBoxIcon.Error);
                 return;
             }
 

@@ -5,9 +5,23 @@ using System;
 using System.Text;
 using System.Threading.Tasks;
 
+/*
+    MqttPublisher.cs
+
+    MQTT transport layer for GW2Telemetry.
+
+    Responsibilities:
+    - Creates and manages the MQTT client connection
+    - Connects to the configured broker and port
+    - Reconnects automatically if the connection drops
+    - Normalizes and returns the effective publish topic
+    - Publishes JSON telemetry payloads to the MQTT broker
+    - Disconnects cleanly when telemetry stops or the app exits
+*/
+
 namespace GW2Telemetry
 {
-    public class MqttPublisher
+    public sealed class MqttPublisher
     {
         private readonly TelemetryConfig _config;
         private readonly IMqttClient _client;
@@ -29,16 +43,22 @@ namespace GW2Telemetry
                 .WithClientId($"gw2telemetry_{Environment.MachineName}")
                 .Build();
 
-            // Trigger reconnect when connection drops
-            _client.DisconnectedAsync += async e =>
-            {
-                await AttemptReconnectAsync();
-            };
+            _client.DisconnectedAsync += async _ => await AttemptReconnectAsync();
         }
 
-        /// <summary>
-        /// Establish initial connection to the MQTT broker.
-        /// </summary>
+        public string GetEffectiveTopic()
+        {
+            string baseTopic = (_config.Topic ?? string.Empty).Trim().Trim('/');
+            string eventCode = (_config.EventCode ?? string.Empty).Trim().Trim('/');
+
+            if (string.IsNullOrWhiteSpace(baseTopic))
+                return string.Empty;
+
+            return string.IsNullOrWhiteSpace(eventCode)
+                ? "/" + baseTopic
+                : "/" + baseTopic + "/" + eventCode;
+        }
+
         public async Task ConnectAsync()
         {
             if (_client.IsConnected)
@@ -47,41 +67,17 @@ namespace GW2Telemetry
             await AttemptReconnectAsync();
         }
 
-        /// <summary>
-        /// Attempt to reconnect until successful.
-        /// </summary>
-        private async Task AttemptReconnectAsync()
-        {
-            if (_connecting)
-                return;
-
-            _connecting = true;
-
-            while (!_client.IsConnected)
-            {
-                try
-                {
-                    await _client.ConnectAsync(_options);
-                }
-                catch
-                {
-                    await Task.Delay(5000);
-                }
-            }
-
-            _connecting = false;
-        }
-
-        /// <summary>
-        /// Publish a telemetry payload to the configured topic.
-        /// </summary>
         public async Task PublishAsync(string payload)
         {
             if (!_client.IsConnected)
                 return;
 
+            string topic = GetEffectiveTopic();
+            if (string.IsNullOrWhiteSpace(topic))
+                return;
+
             var message = new MqttApplicationMessageBuilder()
-                .WithTopic(_config.Topic)
+                .WithTopic(topic)
                 .WithPayload(Encoding.UTF8.GetBytes(payload))
                 .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtMostOnce)
                 .Build();
@@ -89,14 +85,36 @@ namespace GW2Telemetry
             await _client.PublishAsync(message);
         }
 
-        /// <summary>
-        /// Gracefully disconnect from the broker.
-        /// </summary>
         public async Task DisconnectAsync()
         {
             if (_client.IsConnected)
-            {
                 await _client.DisconnectAsync();
+        }
+
+        private async Task AttemptReconnectAsync()
+        {
+            if (_connecting)
+                return;
+
+            _connecting = true;
+
+            try
+            {
+                while (!_client.IsConnected)
+                {
+                    try
+                    {
+                        await _client.ConnectAsync(_options);
+                    }
+                    catch
+                    {
+                        await Task.Delay(5000);
+                    }
+                }
+            }
+            finally
+            {
+                _connecting = false;
             }
         }
     }
