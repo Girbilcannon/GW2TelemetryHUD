@@ -9,7 +9,7 @@ using System.Threading.Tasks;
     Runtime publishing loop for outgoing telemetry.
 
     Responsibilities:
-    - Connects to the MQTT broker through MqttPublisher
+    - Connects to the selected outgoing transport (MQTT / UDP / JSON-only)
     - Reads current state from MumbleBridgeService / TelemetryRuntime
     - Publishes player position telemetry when data is usable
     - Avoids duplicate publishes when position/name/map have not changed
@@ -23,7 +23,8 @@ namespace GW2Telemetry
     internal sealed class TelemetryWorker
     {
         private readonly TelemetryConfig _config;
-        private readonly MqttPublisher _publisher;
+        private readonly MqttPublisher _mqttPublisher;
+        private readonly UdpPublisher _udpPublisher;
         private readonly Action<string>? _statusCallback;
 
         private CancellationTokenSource? _cts;
@@ -40,7 +41,8 @@ namespace GW2Telemetry
 
         public bool IsRunning => _loopTask != null && !_loopTask.IsCompleted;
         public bool IsMumbleConnected => MumbleBridgeService.GetState().IsConnected;
-        public string EffectiveTopic => _publisher.GetEffectiveTopic();
+
+        public string EffectiveTarget => GetPublishTargetText();
 
         public string LastCharacterName { get; private set; } = "-";
         public int LastMapId { get; private set; }
@@ -50,7 +52,9 @@ namespace GW2Telemetry
         public TelemetryWorker(TelemetryConfig config, Action<string>? statusCallback = null)
         {
             _config = config;
-            _publisher = new MqttPublisher(config);
+            _config.NormalizeAfterLoad();
+            _mqttPublisher = new MqttPublisher(config);
+            _udpPublisher = new UdpPublisher(config);
             _statusCallback = statusCallback;
         }
 
@@ -67,9 +71,22 @@ namespace GW2Telemetry
             _lastPublishedName = string.Empty;
             _forceRefresh = true;
 
-            SetStatus("Connecting to MQTT broker...");
-            await _publisher.ConnectAsync();
-            SetStatus($"MQTT connected. Publishing to {EffectiveTopic}. Waiting for Guild Wars 2 / MumbleLink...");
+            if (_config.IsMqttSelected)
+            {
+                SetStatus("Connecting to MQTT broker...");
+                await _mqttPublisher.ConnectAsync().ConfigureAwait(false);
+                SetStatus($"MQTT connected. Publishing to {_mqttPublisher.GetEffectiveTopic()}. Waiting for Guild Wars 2 / MumbleLink...");
+            }
+            else if (_config.IsUdpSelected)
+            {
+                SetStatus("Opening UDP telemetry socket...");
+                await _udpPublisher.ConnectAsync().ConfigureAwait(false);
+                SetStatus($"UDP ready. Sending to {_udpPublisher.GetEndpointDisplay()}. Waiting for Guild Wars 2 / MumbleLink...");
+            }
+            else
+            {
+                SetStatus("JSON output only mode active. Waiting for Guild Wars 2 / MumbleLink...");
+            }
 
             _loopTask = Task.Run(() => TelemetryLoopAsync(_cts.Token));
         }
@@ -84,9 +101,11 @@ namespace GW2Telemetry
             _cts?.Cancel();
 
             if (_loopTask != null)
-                await _loopTask;
+                await _loopTask.ConfigureAwait(false);
 
-            await _publisher.DisconnectAsync();
+            await _mqttPublisher.DisconnectAsync().ConfigureAwait(false);
+            await _udpPublisher.DisconnectAsync().ConfigureAwait(false);
+
             SetStatus("Telemetry stopped.");
         }
 
@@ -133,19 +152,12 @@ namespace GW2Telemetry
 
                         if (hasMoved)
                         {
-                            var payload = new
-                            {
-                                option = "position",
-                                x = snapshot.PlayerX,
-                                y = snapshot.PlayerY,
-                                z = snapshot.PlayerZ,
-                                user = currentName,
-                                map = snapshot.MapId,
-                                color = IntToHexColor(_config.Color)
-                            };
+                            string json = BuildOutboundPayload(snapshot, currentName);
 
-                            string json = JsonConvert.SerializeObject(payload);
-                            await _publisher.PublishAsync(json);
+                            if (_config.IsMqttSelected)
+                                await _mqttPublisher.PublishAsync(json).ConfigureAwait(false);
+                            else if (_config.IsUdpSelected)
+                                await _udpPublisher.PublishAsync(json).ConfigureAwait(false);
 
                             _hasLastPublishedPosition = true;
                             _lastPublishedX = snapshot.PlayerX;
@@ -160,8 +172,8 @@ namespace GW2Telemetry
                                 : currentName;
 
                             SetStatus(
-                                $"Publishing telemetry for {displayName} on map {snapshot.MapId} " +
-                                $"to {EffectiveTopic} at X:{snapshot.PlayerX:0.##} Y:{snapshot.PlayerY:0.##} Z:{snapshot.PlayerZ:0.##}");
+                                $"{GetTransportDisplayName()} telemetry for {displayName} on map {snapshot.MapId} " +
+                                $"to {GetPublishTargetText()} at X:{snapshot.PlayerX:0.##} Y:{snapshot.PlayerY:0.##} Z:{snapshot.PlayerZ:0.##}");
                         }
                     }
                     else if (bridge.IsConnected && snapshot != null)
@@ -186,7 +198,7 @@ namespace GW2Telemetry
                             ? string.Empty
                             : $" ({bridge.FailureReason})";
 
-                        SetStatus($"MQTT connected. Publishing to {EffectiveTopic}. Waiting for Guild Wars 2 / MumbleLink...{suffix}");
+                        SetStatus($"{GetIdleStatusPrefix()} Waiting for Guild Wars 2 / MumbleLink...{suffix}");
                     }
                 }
                 catch (Exception ex)
@@ -196,12 +208,80 @@ namespace GW2Telemetry
 
                 try
                 {
-                    await Task.Delay(publishIntervalMs, token);
+                    await Task.Delay(publishIntervalMs, token).ConfigureAwait(false);
                 }
                 catch
                 {
                 }
             }
+        }
+
+        private string BuildOutboundPayload(dynamic snapshot, string currentName)
+        {
+            if (_config.IsUdpSelected)
+            {
+                var udpPayload = new
+                {
+                    option = "position",
+                    x = snapshot.PlayerX,
+                    y = snapshot.PlayerY,
+                    z = snapshot.PlayerZ,
+                    speed = 0,
+                    angle = 0,
+                    user = currentName,
+                    sessionCode = _config.EventCode ?? string.Empty,
+                    map = snapshot.MapId,
+                    color = IntToHexColor(_config.Color)
+                };
+
+                return JsonConvert.SerializeObject(udpPayload);
+            }
+
+            var mqttPayload = new
+            {
+                option = "position",
+                x = snapshot.PlayerX,
+                y = snapshot.PlayerY,
+                z = snapshot.PlayerZ,
+                user = currentName,
+                map = snapshot.MapId,
+                color = IntToHexColor(_config.Color)
+            };
+
+            return JsonConvert.SerializeObject(mqttPayload);
+        }
+
+        private string GetTransportDisplayName()
+        {
+            if (_config.IsMqttSelected)
+                return "MQTT";
+
+            if (_config.IsUdpSelected)
+                return "UDP";
+
+            return "JSON-only";
+        }
+
+        private string GetPublishTargetText()
+        {
+            if (_config.IsMqttSelected)
+                return _mqttPublisher.GetEffectiveTopic();
+
+            if (_config.IsUdpSelected)
+                return _udpPublisher.GetEndpointDisplay();
+
+            return $"http://localhost:{_config.LocalServerPort}/mumble";
+        }
+
+        private string GetIdleStatusPrefix()
+        {
+            if (_config.IsMqttSelected)
+                return $"MQTT connected. Publishing to {_mqttPublisher.GetEffectiveTopic()}.";
+
+            if (_config.IsUdpSelected)
+                return $"UDP ready. Sending to {_udpPublisher.GetEndpointDisplay()}.";
+
+            return "JSON output only mode active.";
         }
 
         private static bool AreClose(float a, float b)

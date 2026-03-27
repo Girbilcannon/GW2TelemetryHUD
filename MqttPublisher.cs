@@ -25,8 +25,6 @@ namespace GW2Telemetry
     {
         private readonly TelemetryConfig _config;
         private readonly IMqttClient _client;
-        private readonly MqttClientOptions _options;
-
         private bool _connecting;
 
         public bool IsConnected => _client.IsConnected;
@@ -38,25 +36,21 @@ namespace GW2Telemetry
             var factory = new MqttFactory();
             _client = factory.CreateMqttClient();
 
-            _options = new MqttClientOptionsBuilder()
-                .WithTcpServer(_config.Broker, _config.Port)
-                .WithClientId($"gw2telemetry_{Environment.MachineName}")
-                .Build();
-
-            _client.DisconnectedAsync += async _ => await AttemptReconnectAsync();
+            _client.DisconnectedAsync += async _ => await AttemptReconnectAsync().ConfigureAwait(false);
         }
 
         public string GetEffectiveTopic()
         {
-            string baseTopic = (_config.Topic ?? string.Empty).Trim().Trim('/');
-            string eventCode = (_config.EventCode ?? string.Empty).Trim().Trim('/');
+            return _config.ResolvedMqttTopic;
+        }
 
-            if (string.IsNullOrWhiteSpace(baseTopic))
+        public string GetEndpointDisplay()
+        {
+            string broker = (_config.MqttBroker ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(broker) || _config.MqttPort <= 0)
                 return string.Empty;
 
-            return string.IsNullOrWhiteSpace(eventCode)
-                ? "/" + baseTopic
-                : "/" + baseTopic + "/" + eventCode;
+            return $"{broker}:{_config.MqttPort}";
         }
 
         public async Task ConnectAsync()
@@ -64,7 +58,7 @@ namespace GW2Telemetry
             if (_client.IsConnected)
                 return;
 
-            await AttemptReconnectAsync();
+            await AttemptReconnectAsync().ConfigureAwait(false);
         }
 
         public async Task PublishAsync(string payload)
@@ -82,13 +76,13 @@ namespace GW2Telemetry
                 .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtMostOnce)
                 .Build();
 
-            await _client.PublishAsync(message);
+            await _client.PublishAsync(message).ConfigureAwait(false);
         }
 
         public async Task DisconnectAsync()
         {
             if (_client.IsConnected)
-                await _client.DisconnectAsync();
+                await _client.DisconnectAsync().ConfigureAwait(false);
         }
 
         private async Task AttemptReconnectAsync()
@@ -104,11 +98,16 @@ namespace GW2Telemetry
                 {
                     try
                     {
-                        await _client.ConnectAsync(_options);
+                        var options = new MqttClientOptionsBuilder()
+                            .WithTcpServer(_config.MqttBroker, _config.MqttPort)
+                            .WithClientId($"gw2telemetry_{Environment.MachineName}")
+                            .Build();
+
+                        await _client.ConnectAsync(options).ConfigureAwait(false);
                     }
                     catch
                     {
-                        await Task.Delay(5000);
+                        await Task.Delay(5000).ConfigureAwait(false);
                     }
                 }
             }

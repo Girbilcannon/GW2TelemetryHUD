@@ -40,11 +40,20 @@ namespace GW2Telemetry
         private HudCard _cardGame = null!;
         private HudCard _cardLive = null!;
 
+        private ComboBox _cmbServerType = null!;
+        private Label _lblHostLabel = null!;
         private TextBox _txtBroker = null!;
+        private Label _lblPortLabel = null!;
         private NumericUpDown _numPort = null!;
+        private Label _lblTopicLabel = null!;
         private TextBox _txtTopic = null!;
+        private Label _lblEventCodeLabel = null!;
         private TextBox _txtEventCode = null!;
+        private Label _lblEffectiveTopicLabel = null!;
         private Label _lblEffectiveTopic = null!;
+        private Label _lblJsonRoot = null!;
+        private Label _lblJsonStatus = null!;
+        private Label _lblJsonMumble = null!;
 
         private NumericUpDown _numInterval = null!;
         private NumericUpDown _numColor = null!;
@@ -72,7 +81,7 @@ namespace GW2Telemetry
         {
             _config = ConfigManager.Load();
             _worker = new TelemetryWorker(_config, UpdateStatusFromWorker);
-            _localServer = new TelemetryLocalServer(61338);
+            _localServer = new TelemetryLocalServer(_config.LocalServerPort);
 
             _toolTip = new ToolTip
             {
@@ -98,7 +107,7 @@ namespace GW2Telemetry
 
             BuildUI();
             RefreshState("Starting telemetry...");
-            _lblSubtitle.Text = "v1.1.1  •  Girbilcannon.8259";
+            _lblSubtitle.Text = "v1.2.0  •  Girbilcannon.8259";
 
             _ = AutoStartTelemetry();
             _ = StartStatusTimer();
@@ -225,8 +234,8 @@ namespace GW2Telemetry
                 Left = left,
                 Top = top,
                 Width = 410,
-                Height = 235,
-                Title = "MQTT Connection"
+                Height = 275,
+                Title = "Connection"
             };
             BuildConnectionCard();
             Controls.Add(_cardConnection);
@@ -245,9 +254,9 @@ namespace GW2Telemetry
             _cardGame = new HudCard
             {
                 Left = left,
-                Top = top + 235 + gap,
+                Top = top + 275 + gap,
                 Width = 410,
-                Height = 165,
+                Height = 145,
                 Title = "Game Connection"
             };
             BuildGameCard();
@@ -269,9 +278,36 @@ namespace GW2Telemetry
         {
             int xLabel = 18;
             int xInput = 135;
-            int rowY = 42;
+            int rowY = 22;
 
-            _cardConnection.Controls.Add(Theme.MakeLabel("Broker", xLabel, rowY + 5, true, true));
+            _cardConnection.Controls.Add(Theme.MakeLabel("Server Type", xLabel, rowY + 5, true, true));
+
+            _cmbServerType = new ComboBox
+            {
+                Left = xInput,
+                Top = rowY,
+                Width = 170,
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            _cmbServerType.Items.AddRange(new object[]
+            {
+                TelemetryConfig.ServerTypeUdp,
+                TelemetryConfig.ServerTypeMqtt,
+                TelemetryConfig.ServerTypeJsonOnly
+            });
+            _cmbServerType.FlatStyle = FlatStyle.Flat;
+            _cmbServerType.BackColor = Theme.InputBack;
+            _cmbServerType.ForeColor = Theme.Text;
+            _cmbServerType.SelectedIndexChanged += (_, _) =>
+            {
+                ApplyConnectionModeUi();
+                UpdateConnectionPreview();
+            };
+            _cardConnection.Controls.Add(_cmbServerType);
+
+            rowY += 40;
+            _lblHostLabel = Theme.MakeLabel("Server", xLabel, rowY + 5, true, true);
+            _cardConnection.Controls.Add(_lblHostLabel);
 
             _txtBroker = new TextBox
             {
@@ -280,10 +316,12 @@ namespace GW2Telemetry
                 Width = 238
             };
             Theme.ApplyTextBoxStyle(_txtBroker);
+            _txtBroker.TextChanged += (_, _) => UpdateConnectionPreview();
             _cardConnection.Controls.Add(_txtBroker);
 
             rowY += 40;
-            _cardConnection.Controls.Add(Theme.MakeLabel("Port", xLabel, rowY + 5, true, true));
+            _lblPortLabel = Theme.MakeLabel("Port", xLabel, rowY + 5, true, true);
+            _cardConnection.Controls.Add(_lblPortLabel);
 
             _numPort = new NumericUpDown
             {
@@ -294,10 +332,12 @@ namespace GW2Telemetry
                 Maximum = 65535
             };
             Theme.ApplyNumericStyle(_numPort);
+            _numPort.ValueChanged += (_, _) => UpdateConnectionPreview();
             _cardConnection.Controls.Add(_numPort);
 
             rowY += 40;
-            _cardConnection.Controls.Add(Theme.MakeLabel("Base Topic", xLabel, rowY + 5, true, true));
+            _lblTopicLabel = Theme.MakeLabel("Base Topic", xLabel, rowY + 5, true, true);
+            _cardConnection.Controls.Add(_lblTopicLabel);
 
             _txtTopic = new TextBox
             {
@@ -306,11 +346,12 @@ namespace GW2Telemetry
                 Width = 238
             };
             Theme.ApplyTextBoxStyle(_txtTopic);
-            _txtTopic.TextChanged += (_, _) => UpdateEffectiveTopicPreview();
+            _txtTopic.TextChanged += (_, _) => UpdateConnectionPreview();
             _cardConnection.Controls.Add(_txtTopic);
 
             rowY += 40;
-            _cardConnection.Controls.Add(Theme.MakeLabel("Event Code", xLabel, rowY + 5, true, true));
+            _lblEventCodeLabel = Theme.MakeLabel("Event Code", xLabel, rowY + 5, true, true);
+            _cardConnection.Controls.Add(_lblEventCodeLabel);
 
             _txtEventCode = new TextBox
             {
@@ -319,16 +360,56 @@ namespace GW2Telemetry
                 Width = 140
             };
             Theme.ApplyTextBoxStyle(_txtEventCode);
-            _txtEventCode.TextChanged += (_, _) => UpdateEffectiveTopicPreview();
+            _txtEventCode.TextChanged += (_, _) => UpdateConnectionPreview();
             _cardConnection.Controls.Add(_txtEventCode);
 
             rowY += 44;
-            _cardConnection.Controls.Add(Theme.MakeLabel("Effective Topic", xLabel, rowY + 4, true, true));
+            _lblEffectiveTopicLabel = Theme.MakeLabel("Preview", xLabel, rowY + 4, true, true);
+            _cardConnection.Controls.Add(_lblEffectiveTopicLabel);
 
             _lblEffectiveTopic = Theme.MakeLabel("-", xInput, rowY + 4, false, false, 238);
             _lblEffectiveTopic.ForeColor = Theme.Accent;
             _lblEffectiveTopic.Font = new Font("Segoe UI Semibold", 9.25f, FontStyle.Bold);
             _cardConnection.Controls.Add(_lblEffectiveTopic);
+
+            _lblJsonRoot = Theme.MakeLabel("-", xLabel, 104, false, false, 350);
+            _lblJsonRoot.ForeColor = Theme.Accent;
+            _lblJsonRoot.Cursor = Cursors.Hand;
+            _lblJsonRoot.Click += (_, _) =>
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = _lblJsonRoot.Text.Replace("Root: ", ""),
+                    UseShellExecute = true
+                });
+            };
+            _cardConnection.Controls.Add(_lblJsonRoot);
+
+            _lblJsonStatus = Theme.MakeLabel("-", xLabel, 138, false, false, 350);
+            _lblJsonStatus.ForeColor = Theme.Accent;
+            _lblJsonStatus.Cursor = Cursors.Hand;
+            _lblJsonStatus.Click += (_, _) =>
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = _lblJsonStatus.Text.Replace("Status: ", ""),
+                    UseShellExecute = true
+                });
+            };
+            _cardConnection.Controls.Add(_lblJsonStatus);
+
+            _lblJsonMumble = Theme.MakeLabel("-", xLabel, 172, false, false, 350);
+            _lblJsonMumble.ForeColor = Theme.Accent;
+            _lblJsonMumble.Cursor = Cursors.Hand;
+            _lblJsonMumble.Click += (_, _) =>
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = _lblJsonMumble.Text.Replace("Mumble: ", ""),
+                    UseShellExecute = true
+                });
+            };
+            _cardConnection.Controls.Add(_lblJsonMumble);
         }
 
         private void BuildTelemetryCard()
@@ -549,15 +630,26 @@ namespace GW2Telemetry
 
         private void RefreshState(string? statusText = null)
         {
-            _txtBroker.Text = _config.Broker;
-            _numPort.Value = _config.Port;
-            _txtTopic.Text = _config.Topic;
+            _cmbServerType.SelectedItem = _config.NormalizedServerType;
+            if (_cmbServerType.SelectedItem == null)
+                _cmbServerType.SelectedItem = TelemetryConfig.ServerTypeUdp;
+
+            _txtBroker.Text = _config.IsMqttSelected
+                ? _config.MqttBroker
+                : _config.UdpHost;
+
+            _numPort.Value = _config.IsMqttSelected
+                ? Math.Max(_numPort.Minimum, Math.Min(_numPort.Maximum, _config.MqttPort))
+                : Math.Max(_numPort.Minimum, Math.Min(_numPort.Maximum, _config.UdpPort));
+
+            _txtTopic.Text = _config.MqttTopic;
             _txtEventCode.Text = _config.EventCode ?? string.Empty;
             _numInterval.Value = Math.Max(_numInterval.Minimum, Math.Min(_numInterval.Maximum, _config.PublishIntervalMs));
             _numColor.Value = Math.Max(_numColor.Minimum, Math.Min(_numColor.Maximum, _config.Color));
 
             bool isRunning = _worker.IsRunning;
 
+            _cmbServerType.Enabled = !isRunning;
             _txtBroker.Enabled = !isRunning;
             _numPort.Enabled = !isRunning;
             _txtTopic.Enabled = !isRunning;
@@ -572,7 +664,8 @@ namespace GW2Telemetry
             if (!string.IsNullOrWhiteSpace(statusText))
                 _lblStatus.Text = statusText;
 
-            UpdateEffectiveTopicPreview();
+            ApplyConnectionModeUi();
+            UpdateConnectionPreview();
             UpdateColorPreview();
             UpdateStatusDisplay();
         }
@@ -585,12 +678,23 @@ namespace GW2Telemetry
                 return;
             }
 
-            _config.Broker = _txtBroker.Text.Trim();
-            _config.Port = (int)_numPort.Value;
-            _config.Topic = _txtTopic.Text.Trim();
+            string selectedType = (_cmbServerType.SelectedItem?.ToString() ?? TelemetryConfig.ServerTypeUdp).Trim();
+            _config.ServerType = selectedType;
             _config.EventCode = _txtEventCode.Text.Trim();
             _config.PublishIntervalMs = Math.Max(200, (int)_numInterval.Value);
             _config.Color = (int)_numColor.Value;
+
+            if (string.Equals(selectedType, TelemetryConfig.ServerTypeMqtt, StringComparison.OrdinalIgnoreCase))
+            {
+                _config.MqttBroker = _txtBroker.Text.Trim();
+                _config.MqttPort = (int)_numPort.Value;
+                _config.MqttTopic = _txtTopic.Text.Trim();
+            }
+            else if (string.Equals(selectedType, TelemetryConfig.ServerTypeUdp, StringComparison.OrdinalIgnoreCase))
+            {
+                _config.UdpHost = _txtBroker.Text.Trim();
+                _config.UdpPort = (int)_numPort.Value;
+            }
 
             ConfigManager.Save(_config);
             RefreshState("Settings saved.");
@@ -748,10 +852,87 @@ namespace GW2Telemetry
                 : "/" + normalizedBase + "/" + normalizedEvent;
         }
 
-        private void UpdateEffectiveTopicPreview()
+        private void ApplyConnectionModeUi()
         {
-            string effective = BuildEffectiveTopic(_txtTopic.Text, _txtEventCode.Text);
-            _lblEffectiveTopic.Text = effective == "/" ? "-" : effective;
+            string selectedType = (_cmbServerType.SelectedItem?.ToString() ?? TelemetryConfig.ServerTypeUdp).Trim();
+
+            bool isMqtt = string.Equals(selectedType, TelemetryConfig.ServerTypeMqtt, StringComparison.OrdinalIgnoreCase);
+            bool isUdp = string.Equals(selectedType, TelemetryConfig.ServerTypeUdp, StringComparison.OrdinalIgnoreCase);
+            bool isJsonOnly = string.Equals(selectedType, TelemetryConfig.ServerTypeJsonOnly, StringComparison.OrdinalIgnoreCase);
+
+            _cardConnection.Title = isMqtt
+                ? "MQTT Connection"
+                : (isUdp ? "UDP Connection" : "Local JSON Output");
+
+            _lblHostLabel.Visible = !isJsonOnly;
+            _txtBroker.Visible = !isJsonOnly;
+            _lblPortLabel.Visible = !isJsonOnly;
+            _numPort.Visible = !isJsonOnly;
+            _lblTopicLabel.Visible = isMqtt;
+            _txtTopic.Visible = isMqtt;
+            _lblEventCodeLabel.Visible = !isJsonOnly;
+            _txtEventCode.Visible = !isJsonOnly;
+            _lblEffectiveTopicLabel.Visible = !isJsonOnly;
+            _lblEffectiveTopic.Visible = !isJsonOnly;
+
+            _lblJsonRoot.Visible = isJsonOnly;
+            _lblJsonStatus.Visible = isJsonOnly;
+            _lblJsonMumble.Visible = isJsonOnly;
+
+            _lblHostLabel.Text = isMqtt ? "Broker" : "Server";
+            _lblPortLabel.Text = "Port";
+            _lblTopicLabel.Text = "Base Topic";
+            _lblEventCodeLabel.Text = "Event Code";
+            _lblEffectiveTopicLabel.Text = isMqtt ? "Effective Topic" : "Packet Target";
+
+            if (isMqtt)
+            {
+                if (_txtBroker.Text != _config.MqttBroker)
+                    _txtBroker.Text = _config.MqttBroker;
+                _numPort.Value = Math.Max(_numPort.Minimum, Math.Min(_numPort.Maximum, _config.MqttPort));
+            }
+            else if (isUdp)
+            {
+                if (_txtBroker.Text != _config.UdpHost)
+                    _txtBroker.Text = _config.UdpHost;
+                _numPort.Value = Math.Max(_numPort.Minimum, Math.Min(_numPort.Maximum, _config.UdpPort));
+            }
+
+            string root = $"http://localhost:{_config.LocalServerPort}";
+            _lblJsonRoot.Text = $"Root: {root}/";
+            _lblJsonStatus.Text = $"Status: {root}/status";
+            _lblJsonMumble.Text = $"Mumble: {root}/mumble";
+        }
+
+        private void UpdateConnectionPreview()
+        {
+            string selectedType = (_cmbServerType.SelectedItem?.ToString() ?? TelemetryConfig.ServerTypeUdp).Trim();
+
+            if (string.Equals(selectedType, TelemetryConfig.ServerTypeMqtt, StringComparison.OrdinalIgnoreCase))
+            {
+                string effective = BuildEffectiveTopic(_txtTopic.Text, _txtEventCode.Text);
+                _lblEffectiveTopic.Text = effective == "/" ? "-" : effective;
+                return;
+            }
+
+            if (string.Equals(selectedType, TelemetryConfig.ServerTypeUdp, StringComparison.OrdinalIgnoreCase))
+            {
+                string host = _txtBroker.Text.Trim();
+                string eventCode = _txtEventCode.Text.Trim();
+
+                if (string.IsNullOrWhiteSpace(host))
+                {
+                    _lblEffectiveTopic.Text = "-";
+                    return;
+                }
+
+                _lblEffectiveTopic.Text = string.IsNullOrWhiteSpace(eventCode)
+                    ? $"{host}:{(int)_numPort.Value}"
+                    : $"{host}:{(int)_numPort.Value}  •  sessionCode={eventCode}";
+                return;
+            }
+
+            _lblEffectiveTopic.Text = "-";
         }
 
         private void PickColor()

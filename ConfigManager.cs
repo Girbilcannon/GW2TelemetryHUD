@@ -10,6 +10,7 @@ using System.IO;
     Responsibilities:
     - Resolves the application config folder inside AppData
     - Loads config.json into a TelemetryConfig object
+    - Migrates legacy v1.1.x settings into the new v1.2.0 model
     - Returns default config values if the file is missing or invalid
     - Creates the config directory when saving
     - Writes the current TelemetryConfig back to disk as formatted JSON
@@ -33,21 +34,28 @@ namespace GW2Telemetry
             try
             {
                 if (!File.Exists(ConfigPath))
-                    return new TelemetryConfig();
+                {
+                    var fresh = new TelemetryConfig();
+                    fresh.NormalizeAfterLoad();
+                    return fresh;
+                }
 
                 var text = File.ReadAllText(ConfigPath);
-
-                return JsonConvert.DeserializeObject<TelemetryConfig>(text)
-                       ?? new TelemetryConfig();
+                var config = JsonConvert.DeserializeObject<TelemetryConfig>(text) ?? new TelemetryConfig();
+                config.NormalizeAfterLoad();
+                return config;
             }
             catch
             {
-                return new TelemetryConfig();
+                var fallback = new TelemetryConfig();
+                fallback.NormalizeAfterLoad();
+                return fallback;
             }
         }
 
         public static void Save(TelemetryConfig config)
         {
+            config.NormalizeAfterLoad();
             Directory.CreateDirectory(ConfigDirectory);
 
             var json = JsonConvert.SerializeObject(
