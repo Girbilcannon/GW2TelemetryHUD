@@ -139,7 +139,7 @@ namespace GW2Telemetry
 
                         LastCharacterName = string.IsNullOrWhiteSpace(currentName) ? "-" : currentName;
                         LastMapId = snapshot.MapId;
-                        LastPositionText = $"X:{snapshot.PlayerX:0.##}  Y:{snapshot.PlayerY:0.##}  Z:{snapshot.PlayerZ:0.##}";
+                        LastPositionText = $"X:{snapshot.PlayerX:0.######}  Y:{snapshot.PlayerY:0.######}  Z:{snapshot.PlayerZ:0.######}";
 
                         bool hasMoved =
                             _forceRefresh ||
@@ -173,7 +173,7 @@ namespace GW2Telemetry
 
                             SetStatus(
                                 $"{GetTransportDisplayName()} telemetry for {displayName} on map {snapshot.MapId} " +
-                                $"to {GetPublishTargetText()} at X:{snapshot.PlayerX:0.##} Y:{snapshot.PlayerY:0.##} Z:{snapshot.PlayerZ:0.##}");
+                                $"to {GetPublishTargetText()} at X:{snapshot.PlayerX:0.######} Y:{snapshot.PlayerY:0.######} Z:{snapshot.PlayerZ:0.######}");
                         }
                     }
                     else if (bridge.IsConnected && snapshot != null)
@@ -218,14 +218,18 @@ namespace GW2Telemetry
 
         private string BuildOutboundPayload(dynamic snapshot, string currentName)
         {
+            double x = Math.Round((double)snapshot.PlayerX, 6);
+            double y = Math.Round((double)snapshot.PlayerY, 6);
+            double z = Math.Round((double)snapshot.PlayerZ, 6);
+
             if (_config.IsUdpSelected)
             {
                 var udpPayload = new
                 {
                     option = "position",
-                    x = snapshot.PlayerX,
-                    y = snapshot.PlayerY,
-                    z = snapshot.PlayerZ,
+                    x = x,
+                    y = y,
+                    z = z,
                     speed = 0,
                     angle = 0,
                     user = currentName,
@@ -240,9 +244,9 @@ namespace GW2Telemetry
             var mqttPayload = new
             {
                 option = "position",
-                x = snapshot.PlayerX,
-                y = snapshot.PlayerY,
-                z = snapshot.PlayerZ,
+                x = x,
+                y = y,
+                z = z,
                 user = currentName,
                 map = snapshot.MapId,
                 color = IntToHexColor(_config.Color)
